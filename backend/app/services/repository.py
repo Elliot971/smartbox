@@ -635,22 +635,51 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
     if slot:
         slot.last_anomaly_score = new_score
 
-    # Save heatmap image (from 4090 DINOv2) to uploads/heatmaps/
+    # Save heatmap: overlay 4090's cropped heatmap onto the full original image
     heatmap_b64 = result.get("heatmap_b64", "")
     heatmap_path = ""
     if heatmap_b64:
         try:
             import base64 as _b64
+            import io as _io
+            from PIL import Image as _PILImage
             backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+
+            # 4090 返回的热力图（裁剪图的叠加，392x392）
+            hm_overlay = _PILImage.open(_io.BytesIO(_b64.b64decode(heatmap_b64))).convert("RGBA")
+
+            # 加载原始图片
+            orig_url = row.image_url or ""
+            orig_path = os.path.join(backend_root, orig_url.lstrip("/")) if orig_url.startswith("/") else orig_url
+            bbox = row.bbox or task.get("bbox") or []
+
+            if orig_path and os.path.isfile(orig_path) and len(bbox) == 4:
+                # 有 bbox：把热力图叠加到原图的 bbox 区域
+                orig_img = _PILImage.open(orig_path).convert("RGBA")
+                ow, oh = orig_img.size
+                # bbox 是 [x1, y1, x2, y2] 归一化坐标
+                x1, y1, x2, y2 = [float(v) for v in bbox]
+                bx1, by1 = int(x1 * ow), int(y1 * oh)
+                bx2, by2 = int(x2 * ow), int(y2 * oh)
+                bw, bh = max(1, bx2 - bx1), max(1, by2 - by1)
+                # 缩放热力图到 bbox 大小
+                hm_resized = hm_overlay.resize((bw, bh), _PILImage.LANCZOS)
+                # 叠加到原图
+                orig_img.alpha_composite(hm_resized, (bx1, by1))
+                # 转回 RGB 保存
+                final = orig_img.convert("RGB")
+            else:
+                # 无 bbox：直接用 4090 返回的热力图
+                final = hm_overlay.convert("RGB")
+
             hm_dir = os.path.join(backend_root, "uploads", "heatmaps")
             os.makedirs(hm_dir, exist_ok=True)
             hm_filename = f"hm_{task_id}_{int(time.time())}.jpg"
             hm_filepath = os.path.join(hm_dir, hm_filename)
-            with open(hm_filepath, "wb") as f:
-                f.write(_b64.b64decode(heatmap_b64))
+            final.save(hm_filepath, "JPEG", quality=90)
             heatmap_path = hm_filepath
             row.heatmap_url = f"/uploads/heatmaps/{hm_filename}"
-            logger.info("热力图已保存: %s", heatmap_path)
+            logger.info("热力图已叠加到原图并保存: %s", heatmap_path)
         except Exception:
             logger.exception("热力图保存失败")
             row.heatmap_url = ""
