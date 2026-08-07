@@ -575,12 +575,33 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
 
         # Run YOLO (fast, ~3s) while kimi-k3 runs in parallel
         detections = damage_model_service.detect_tools(row.image_url)
-        bbox = damage_model_service.match_tool_bbox(detections, row.tool_class or row.tool_name)
+        yolo_bbox = damage_model_service.match_tool_bbox(detections, row.tool_class or row.tool_name)
 
-        # If YOLO didn't match, wait for kimi-k3 result
-        if not bbox and kimi_thread:
+        # YOLO 置信度检查：低于 0.5 时不直接采用，等 kimi-k3
+        yolo_conf = 0.0
+        if yolo_bbox and detections:
+            target = (row.tool_class or row.tool_name or "").lower().replace("_", " ")
+            for d in detections:
+                name = d.get("class_name", "").lower().replace("_", " ")
+                if target in name or name in target:
+                    yolo_conf = max(yolo_conf, d.get("confidence", 0))
+
+        bbox = None
+        if yolo_bbox and yolo_conf >= 0.5:
+            # YOLO 高置信度，直接用
+            bbox = yolo_bbox
+        elif kimi_thread:
+            # YOLO 低置信度或未匹配，等 kimi-k3
             kimi_thread.join(timeout=60)
-            bbox = kimi_result[0]
+            kimi_bbox = kimi_result[0]
+            if kimi_bbox:
+                # kimi-k3 返回了更完整的 bbox
+                bbox = kimi_bbox
+                logger.info("使用 kimi-k3 bbox（YOLO 置信度 %.2f）: %s", yolo_conf, [round(v,3) for v in bbox])
+            elif yolo_bbox:
+                # kimi-k3 没返回，降级用 YOLO 的
+                bbox = yolo_bbox
+                logger.info("kimi-k3 未定位，降级用 YOLO bbox (conf=%.2f): %s", yolo_conf, [round(v,3) for v in bbox])
 
         if bbox:
             row.bbox = bbox
@@ -635,7 +656,10 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
     if slot:
         slot.last_anomaly_score = new_score
 
-    # Save heatmap: overlay 4090's cropped heatmap onto the full original image
+    # Save heatmap: precisely map 4090's DINOv2 heatmap onto the full original image.
+    # DINOv2 preprocessing: crop(tool ROI) → compress(≤1024) → Resize(392) → CenterCrop(392)
+    # Heatmap is the 392×392 overlay of the DINOv2 input.
+    # We reverse-map through the preprocessing chain to place it on the original image.
     heatmap_b64 = result.get("heatmap_b64", "")
     heatmap_path = ""
     if heatmap_b64:
@@ -645,28 +669,72 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
             from PIL import Image as _PILImage
             backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
 
-            # 4090 返回的热力图（裁剪图的叠加，392x392）
+            # 4090 返回的热力图（392×392，是 DINOv2 输入的叠加图）
             hm_overlay = _PILImage.open(_io.BytesIO(_b64.b64decode(heatmap_b64))).convert("RGBA")
 
-            # 加载原始图片
+            # 加载原始上传图
             orig_url = row.image_url or ""
             orig_path = os.path.join(backend_root, orig_url.lstrip("/")) if orig_url.startswith("/") else orig_url
             bbox = row.bbox or task.get("bbox") or []
 
             if orig_path and os.path.isfile(orig_path) and len(bbox) == 4:
-                # 有 bbox：把热力图叠加到原图的 bbox 区域
                 orig_img = _PILImage.open(orig_path).convert("RGBA")
-                ow, oh = orig_img.size
-                # bbox 是 [x1, y1, x2, y2] 归一化坐标
+                ow, oh = orig_img.size  # 原图尺寸
+
+                # Step 1: bbox 区域（归一化 → 原图像素）
                 x1, y1, x2, y2 = [float(v) for v in bbox]
                 bx1, by1 = int(x1 * ow), int(y1 * oh)
                 bx2, by2 = int(x2 * ow), int(y2 * oh)
-                bw, bh = max(1, bx2 - bx1), max(1, by2 - by1)
-                # 缩放热力图到 bbox 大小
-                hm_resized = hm_overlay.resize((bw, bh), _PILImage.LANCZOS)
-                # 叠加到原图
-                orig_img.alpha_composite(hm_resized, (bx1, by1))
-                # 转回 RGB 保存
+                crop_w, crop_h = max(1, bx2 - bx1), max(1, by2 - by1)
+
+                # Step 2: 后端 _compress_image_bytes 压缩到 ≤1024
+                # 压缩后的裁剪图尺寸（等比缩放）
+                if max(crop_w, crop_h) > 1024:
+                    scale = 1024 / max(crop_w, crop_h)
+                    comp_w, comp_h = int(crop_w * scale), int(crop_h * scale)
+                else:
+                    comp_w, comp_h = crop_w, crop_h
+
+                # Step 3: DINOv2 Resize(392) → CenterCrop(392)
+                # Resize(392) 将短边缩放到 392，长边等比
+                # 然后 CenterCrop(392) 从中心裁出 392×392
+                if comp_w >= comp_h:
+                    # 宽 > 高：Resize 后高度=392，宽度>392，CenterCrop 裁左右
+                    res_h = 392
+                    res_w = int(comp_w * 392 / comp_h)
+                    # CenterCrop 裁剪区域在 resize 后的图片中的偏移
+                    cc_x1 = (res_w - 392) // 2
+                    cc_y1 = 0
+                    # 映射到压缩后图片的区域
+                    # CenterCrop 的 392×392 对应压缩图的哪些像素
+                    cc_left_frac = cc_x1 / res_w  # 左边裁掉的占比
+                    cc_right_frac = (cc_x1 + 392) / res_w
+                    cc_top_frac = 0.0
+                    cc_bottom_frac = 1.0
+                else:
+                    # 高 > 宽：Resize 后宽度=392，高度>392，CenterCrop 裁上下
+                    res_w = 392
+                    res_h = int(comp_h * 392 / comp_w)
+                    cc_x1 = 0
+                    cc_y1 = (res_h - 392) // 2
+                    cc_left_frac = 0.0
+                    cc_right_frac = 1.0
+                    cc_top_frac = cc_y1 / res_h
+                    cc_bottom_frac = (cc_y1 + 392) / res_h
+
+                # Step 4: 把热力图映射回原图
+                # 热力图的 392×392 对应压缩裁剪图的 [cc_left_frac..cc_right_frac] × [cc_top_frac..cc_bottom_frac]
+                # 压缩裁剪图对应原图的 [bx1..bx2] × [by1..by2]
+                hm_ox1 = bx1 + int(cc_left_frac * crop_w)
+                hm_oy1 = by1 + int(cc_top_frac * crop_h)
+                hm_ox2 = bx1 + int(cc_right_frac * crop_w)
+                hm_oy2 = by1 + int(cc_bottom_frac * crop_h)
+                hm_target_w = max(1, hm_ox2 - hm_ox1)
+                hm_target_h = max(1, hm_oy2 - hm_oy1)
+
+                # 缩放热力图到对应区域
+                hm_resized = hm_overlay.resize((hm_target_w, hm_target_h), _PILImage.LANCZOS)
+                orig_img.alpha_composite(hm_resized, (hm_ox1, hm_oy1))
                 final = orig_img.convert("RGB")
             else:
                 # 无 bbox：直接用 4090 返回的热力图
@@ -679,7 +747,8 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
             final.save(hm_filepath, "JPEG", quality=90)
             heatmap_path = hm_filepath
             row.heatmap_url = f"/uploads/heatmaps/{hm_filename}"
-            logger.info("热力图已叠加到原图并保存: %s", heatmap_path)
+            logger.info("热力图已精确叠加到原图: %s (bbox=%s, target=%dx%d@(%d,%d))",
+                        heatmap_path, bbox, hm_target_w, hm_target_h, hm_ox1, hm_oy1)
         except Exception:
             logger.exception("热力图保存失败")
             row.heatmap_url = ""
