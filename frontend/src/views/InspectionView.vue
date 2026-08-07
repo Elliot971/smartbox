@@ -75,7 +75,7 @@
           <div class="task-actions">
             <button v-if="task.heatmap_url" class="btn small" @click="showHeatmap(task.image_url, task.heatmap_url, task.tool_name)">热力图</button>
             <button class="btn small" :disabled="analyzingId === task.id" @click="analyze(task.id)">
-              {{ analyzingId === task.id ? '分析中...' : '重新分析' }}
+              {{ analyzingId === task.id ? `分析中... (${analyzeElapsed}s)` : '重新分析' }}
             </button>
             <button class="btn small danger" @click="remove(task.id)">删除</button>
           </div>
@@ -126,6 +126,7 @@ const toolSummary = ref<ToolDamageSummary[]>([]);
 const uploading = ref(false);
 const uploadProgress = ref('');
 const analyzingId = ref<number | null>(null);
+const analyzeElapsed = ref(0);
 const uploadInput = ref<HTMLInputElement | null>(null);
 
 const heatmapModal = reactive({
@@ -215,6 +216,8 @@ async function doUpload(file: File) {
 
 async function analyze(id: number) {
   analyzingId.value = id;
+  analyzeElapsed.value = 0;
+  const timer = setInterval(() => { analyzeElapsed.value += 1; }, 1000);
   try {
     await analyzeDamageInspection(id);
     for (let i = 0; i < 90; i++) {
@@ -233,6 +236,7 @@ async function analyze(id: number) {
   } catch (err: any) {
     alert('重新分析失败：' + (err?.message || '未知错误'));
   } finally {
+    clearInterval(timer);
     analyzingId.value = null;
   }
 }
