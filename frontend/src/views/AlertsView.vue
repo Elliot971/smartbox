@@ -7,32 +7,31 @@
         <button class="btn btn-danger" @click="clearAll">清空全部</button>
       </div>
     </div>
-    <table class="table">
-      <thead>
-        <tr>
-          <th>ID</th>
-          <th>设备</th>
-          <th>级别</th>
-          <th>标题</th>
-          <th>描述</th>
-          <th>状态</th>
-          <th>时间</th>
-          <th>操作</th>
-        </tr>
-      </thead>
-      <tbody>
-        <tr v-for="alert in alerts" :key="alert.id">
-          <td>{{ alert.id }}</td>
-          <td>{{ alert.device_code }}</td>
-          <td><span class="badge" :class="alert.severity">{{ alert.severity }}</span></td>
-          <td>{{ alert.title }}</td>
-          <td>{{ alert.description }}</td>
-          <td>{{ alert.status }}</td>
-          <td>{{ formatTime(alert.created_at) }}</td>
-          <td><button class="btn small danger" @click="remove(alert.id)">删除</button></td>
-        </tr>
-      </tbody>
-    </table>
+    <div class="alert-list">
+      <div v-for="alert in alerts" :key="alert.id" class="alert-card" :class="alert.severity">
+        <div class="alert-header">
+          <span class="badge" :class="alert.severity">{{ severityText(alert.severity) }}</span>
+          <span class="alert-title">{{ alert.title }}</span>
+          <span class="alert-status" :class="alert.status">{{ statusText(alert.status) }}</span>
+          <span class="alert-time">{{ formatTime(alert.created_at) }}</span>
+        </div>
+        <div class="alert-desc">{{ alert.description }}</div>
+        <div class="alert-meta" v-if="parseMeta(alert.description).hasMeta">
+          <span v-if="parseMeta(alert.description).scoreInfo" class="meta-item score">
+            分数变化: {{ parseMeta(alert.description).scoreInfo }}
+          </span>
+          <span v-if="parseMeta(alert.description).operatorInfo" class="meta-item operator">
+            操作人: {{ parseMeta(alert.description).operatorInfo }}
+          </span>
+        </div>
+        <div class="alert-actions">
+          <button class="btn small danger" @click="remove(alert.id)">删除</button>
+        </div>
+      </div>
+      <div v-if="alerts.length === 0" class="muted" style="text-align:center; padding:24px;">
+        暂无异常告警。
+      </div>
+    </div>
   </section>
 </template>
 
@@ -45,6 +44,26 @@ const alerts = ref<AlertItem[]>([]);
 
 function formatTime(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-';
+}
+
+function severityText(s: string) {
+  const map: Record<string, string> = { high: '高危', medium: '中危', low: '低危' };
+  return map[s] || s;
+}
+
+function statusText(s: string) {
+  const map: Record<string, string> = { open: '未处理', closed: '已处理' };
+  return map[s] || s;
+}
+
+function parseMeta(desc: string) {
+  const scoreMatch = desc.match(/异常分数:\s*([\d.→]+)/);
+  const operatorMatch = desc.match(/最近操作人:\s*([^|]+)/);
+  return {
+    hasMeta: !!(scoreMatch || operatorMatch),
+    scoreInfo: scoreMatch ? scoreMatch[1].trim() : '',
+    operatorInfo: operatorMatch ? operatorMatch[1].trim() : '',
+  };
 }
 
 async function load() {
@@ -75,3 +94,83 @@ async function clearAll() {
 useRealtime(load);
 onMounted(load);
 </script>
+
+<style scoped>
+.alert-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.alert-card {
+  padding: 14px 16px;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.6);
+}
+.alert-card.high {
+  border-left: 3px solid #ef4444;
+}
+.alert-card.medium {
+  border-left: 3px solid #f59e0b;
+}
+.alert-card.low {
+  border-left: 3px solid #22c55e;
+}
+.alert-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+.alert-title {
+  font-weight: 600;
+  font-size: 14px;
+  flex: 1;
+}
+.alert-status {
+  font-size: 11px;
+  padding: 2px 8px;
+  border-radius: 999px;
+}
+.alert-status.open {
+  background: rgba(239, 68, 68, 0.15);
+  color: #fca5a5;
+}
+.alert-status.closed {
+  background: rgba(34, 197, 94, 0.15);
+  color: #86efac;
+}
+.alert-time {
+  font-size: 12px;
+  color: #94a3b8;
+}
+.alert-desc {
+  font-size: 13px;
+  color: #cbd5e1;
+  line-height: 1.5;
+  margin-bottom: 6px;
+}
+.alert-meta {
+  display: flex;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+}
+.meta-item {
+  font-size: 12px;
+  padding: 3px 8px;
+  border-radius: 4px;
+}
+.meta-item.score {
+  background: rgba(245, 158, 11, 0.12);
+  color: #fcd34d;
+}
+.meta-item.operator {
+  background: rgba(96, 165, 250, 0.12);
+  color: #93c5fd;
+}
+.alert-actions {
+  display: flex;
+  gap: 8px;
+}
+</style>
