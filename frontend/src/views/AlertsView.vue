@@ -18,7 +18,7 @@
         <div class="alert-desc">{{ alert.description }}</div>
         <div class="alert-meta" v-if="parseMeta(alert.description).hasMeta">
           <span v-if="parseMeta(alert.description).scoreInfo" class="meta-item score">
-            分数变化： {{ parseMeta(alert.description).scoreInfo }}
+            分数: {{ parseMeta(alert.description).scoreInfo }}
           </span>
           <span v-if="parseMeta(alert.description).operatorInfo" class="meta-item operator">
             操作人: {{ parseMeta(alert.description).operatorInfo }}
@@ -57,12 +57,17 @@ function statusText(s: string) {
 }
 
 function parseMeta(desc: string) {
-  const scoreMatch = desc.match(/分数变化：\s*([\d.→]+)/);
-  const operatorMatch = desc.match(/最近操作人：\s*([^|]+)/);
+  // 兼容新旧格式：分数变化： 或 异常分数: 或 分数：
+  const scoreMatch = desc.match(/分数变化：\s*([\d.→]+)/) || desc.match(/异常分数:\s*([\d.→]+)/) || desc.match(/分数：\s*([\d.]+)/);
+  const operatorMatch = desc.match(/最近操作人：\s*([^|()]+)/) || desc.match(/最近操作人:\s*([^|()]+)/);
+  // 清理操作人信息：去掉括号内容
+  let operatorInfo = operatorMatch ? operatorMatch[1].trim() : '';
+  // 去掉可能的括号残留
+  operatorInfo = operatorInfo.replace(/\(.*\)/, '').trim();
   return {
     hasMeta: !!(scoreMatch || operatorMatch),
     scoreInfo: scoreMatch ? scoreMatch[1].trim() : '',
-    operatorInfo: operatorMatch ? operatorMatch[1].trim() : '',
+    operatorInfo: operatorInfo,
   };
 }
 

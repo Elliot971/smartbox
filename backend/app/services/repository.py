@@ -711,13 +711,14 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
             operator = db.get(User, recent_event.operator_id)
             if operator:
                 operator_info = f" 最近操作人：{operator.name}"
-        # 只有自动检测（有 slot_id）才显示分数变化，上传检测不显示
         score_info = ""
         if slot:  # 自动检测（板端快照触发）
             if old_score is not None:
                 score_info = f" 分数变化：{old_score:.2f}→{new_score:.2f}"
             else:
                 score_info = f" 分数变化：首次检测 {new_score:.2f}"
+        else:  # 上传检测
+            score_info = f" 分数：{new_score:.2f}"
 
         db.add(
             Alert(
