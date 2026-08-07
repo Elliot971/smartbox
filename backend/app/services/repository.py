@@ -558,7 +558,7 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
     # Works for both board snapshots and uploaded photos (tool_class may be empty).
     # Run YOLO and kimi-k3 in parallel: YOLO is fast (~3s), kimi-k3 is slower (~15s)
     # but more accurate. If YOLO matches, use it; otherwise fall back to kimi-k3.
-    if not task.get("bbox") and row.image_url and row.tool_class:
+    if row.slot_id and not task.get("bbox") and row.image_url and row.tool_class:
         backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
         full_img_path = os.path.join(backend_root, row.image_url.lstrip("/"))
 
@@ -609,12 +609,14 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
             row.raw_result = {"detected_bbox": bbox, "detections": detections}
             db.commit()
 
-    # Crop to the single-tool ROI (provided by board or detected above).
-    cropped_path = damage_model_service._maybe_crop(task)
-    if cropped_path:
-        # Replace image_url with the cropped file so both damage model and LLM see one tool.
-        task = {**task, "image_url": cropped_path}
-        task.pop("bbox", None)
+    # 上传检测：直接对整张图做检测，不需要划分/裁剪
+    # 板端快照（有 slot_id）：用槽位约束划分
+    cropped_path = ""
+    if row.slot_id:
+        cropped_path = damage_model_service._maybe_crop(task)
+        if cropped_path:
+            task = {**task, "image_url": cropped_path}
+            task.pop("bbox", None)
 
     result = damage_model_service.analyze(task)
 
@@ -675,7 +677,8 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
             # 加载原始上传图
             orig_url = row.image_url or ""
             orig_path = os.path.join(backend_root, orig_url.lstrip("/")) if orig_url.startswith("/") else orig_url
-            bbox = row.bbox or task.get("bbox") or []
+            # 只有板端快照（有 slot_id）才用 bbox 映射；上传检测用整图
+            bbox = (row.bbox or task.get("bbox") or []) if row.slot_id else []
 
             if orig_path and os.path.isfile(orig_path) and len(bbox) == 4:
                 orig_img = _PILImage.open(orig_path).convert("RGBA")
@@ -736,8 +739,15 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
                 hm_resized = hm_overlay.resize((hm_target_w, hm_target_h), _PILImage.LANCZOS)
                 orig_img.alpha_composite(hm_resized, (hm_ox1, hm_oy1))
                 final = orig_img.convert("RGB")
+            elif orig_path and os.path.isfile(orig_path):
+                # 无 bbox（上传检测）：4090 热力图保持原图宽高比，直接叠加
+                orig_img = _PILImage.open(orig_path).convert("RGBA")
+                ow, oh = orig_img.size
+                # 热力图尺寸和原图宽高比一致（4090 端 Resize 短边到 392 保持比例）
+                hm_resized = hm_overlay.resize((ow, oh), _PILImage.LANCZOS)
+                orig_img.alpha_composite(hm_resized, (0, 0))
+                final = orig_img.convert("RGB")
             else:
-                # 无 bbox：直接用 4090 返回的热力图
                 final = hm_overlay.convert("RGB")
 
             hm_dir = os.path.join(backend_root, "uploads", "heatmaps")
@@ -747,8 +757,7 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
             final.save(hm_filepath, "JPEG", quality=90)
             heatmap_path = hm_filepath
             row.heatmap_url = f"/uploads/heatmaps/{hm_filename}"
-            logger.info("热力图已精确叠加到原图: %s (bbox=%s, target=%dx%d@(%d,%d))",
-                        heatmap_path, bbox, hm_target_w, hm_target_h, hm_ox1, hm_oy1)
+            logger.info("热力图已叠加到原图: %s", heatmap_path)
         except Exception:
             logger.exception("热力图保存失败")
             row.heatmap_url = ""
