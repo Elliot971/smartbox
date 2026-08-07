@@ -155,7 +155,7 @@ def upsert_snapshot(db: Session, payload: DeviceSnapshotIn) -> dict:
             tool.image_url = image_url
 
         if status_changed:
-            # 只有状态真正发生变化的槽位才更新状态并触发损坏检测。
+            # 状态变化的工具：更新状态并触发完整损坏检测
             slot.current_status = item.status
             slot.confidence = item.confidence
             if tool is not None:
@@ -177,12 +177,35 @@ def upsert_snapshot(db: Session, payload: DeviceSnapshotIn) -> dict:
                 )
                 damage_inspection_ids.append(inspection["id"])
                 logger.info(
-                    "Created damage inspection %s for device %s slot %s tool %s",
+                    "Created damage inspection %s for device %s slot %s tool %s (status changed)",
                     inspection["id"],
                     device.device_code,
                     item.slot_no,
                     item.tool_code,
                 )
+        elif item.status == "present" and image_url:
+            # 在位但状态未变：也创建检测任务，但 analyze 时会比较分数变化决定是否调 kimi-k3
+            inspection = create_damage_inspection(
+                db,
+                DamageInspectionCreate(
+                    device_code=device.device_code,
+                    slot_id=slot.id,
+                    tool_id=tool.id if tool else None,
+                    tool_code=item.tool_code,
+                    tool_name=item.tool_name or item.tool_code or f"slot-{item.slot_no}",
+                    tool_class=item.tool_class,
+                    image_url=image_url,
+                    bbox=item.bbox or [],
+                ),
+            )
+            damage_inspection_ids.append(inspection["id"])
+            logger.info(
+                "Created damage inspection %s for device %s slot %s tool %s (present, score check)",
+                inspection["id"],
+                device.device_code,
+                item.slot_no,
+                item.tool_code,
+            )
 
     db.commit()
     available = (
@@ -562,6 +585,44 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
 
     result = damage_model_service.analyze(task)
 
+    # 获取异常分数
+    new_score = result.get("raw_result", {}).get("anomaly_score", 0.5)
+
+    # 查找该槽位上次的异常分数
+    slot = db.get(CabinetSlot, row.slot_id) if row.slot_id else None
+    old_score = slot.last_anomaly_score if slot else None
+
+    # 分数变化检测：如果上次有分数且变化不大，跳过 kimi-k3 报告（省钱省时间）
+    SCORE_CHANGE_THRESHOLD = 0.1
+    if old_score is not None and abs(new_score - old_score) < SCORE_CHANGE_THRESHOLD:
+        logger.info(
+            "分数变化不足 (slot %s: %.3f -> %.3f, delta=%.3f < %.1f), 跳过 kimi-k3 报告",
+            row.slot_id, old_score, new_score, abs(new_score - old_score), SCORE_CHANGE_THRESHOLD,
+        )
+        # 更新分数但不触发 kimi-k3
+        if slot:
+            slot.last_anomaly_score = new_score
+        row.status = result["status"]
+        row.severity = result["severity"]
+        row.confidence = result["confidence"]
+        row.summary = result["summary"]
+        row.raw_result = result["raw_result"]
+        row.updated_at = now_cn()
+        if cropped_path and os.path.exists(cropped_path):
+            os.remove(cropped_path)
+        # 分数变化不大不创建告警
+        db.commit()
+        return _inspection_to_dict(row, device)
+
+    # 分数变化大或首次检测，触发 kimi-k3 完整报告
+    logger.info(
+        "分数变化显著 (slot %s: %s -> %.3f), 触发 kimi-k3 报告",
+        row.slot_id, f"{old_score:.3f}" if old_score is not None else "首次", new_score,
+    )
+    # 更新槽位的上次分数
+    if slot:
+        slot.last_anomaly_score = new_score
+
     # Generate LLM natural language report, preferring the cropped ROI if available.
     llm_image_path = cropped_path if cropped_path else ""
     if not llm_image_path and row.image_url:
@@ -634,13 +695,31 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
         os.remove(cropped_path)
 
     if row.status in {"damaged", "suspected"}:
+        # 查找最近的操作事件，关联操作人实现追溯
+        recent_event = db.scalar(
+            select(OperationEvent)
+            .where(OperationEvent.device_id == row.device_id)
+            .order_by(OperationEvent.synced_at.desc())
+            .limit(1)
+        )
+        operator_info = ""
+        if recent_event and recent_event.operator_id:
+            operator = db.get(User, recent_event.operator_id)
+            if operator:
+                operator_info = f" | 最近操作人: {operator.name} (operation_id={recent_event.operation_id})"
+            else:
+                operator_info = f" | operation_id={recent_event.operation_id}"
+        score_info = f" | 异常分数: {new_score:.2f}"
+        if old_score is not None:
+            score_info = f" | 异常分数: {old_score:.2f}→{new_score:.2f}"
+
         db.add(
             Alert(
                 device_id=row.device_id,
                 alert_type="tool_damage",
                 severity=row.severity,
                 title=f"工具损坏检测：{row.tool_name or row.tool_code}",
-                description=row.summary,
+                description=row.summary + score_info + operator_info,
             )
         )
 

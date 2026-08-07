@@ -48,6 +48,7 @@ class CabinetSlot(Base):
     current_status: Mapped[str] = mapped_column(String(32), default="empty")
     confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_cn)
+    last_anomaly_score: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     device: Mapped[Device] = relationship(back_populates="slots")
     tool: Mapped[Tool | None] = relationship()
