@@ -100,11 +100,11 @@ def tool_damage_summary(db: Session = Depends(get_db)) -> list[dict]:
 
 @router.post("/upload-and-analyze")
 async def upload_and_analyze(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     tool_code: str = Form(""),
     tool_name: str = Form("上传检测"),
     tool_class: str = Form(""),
-    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> dict:
     """上传照片，立即返回任务ID，后台异步分析"""
