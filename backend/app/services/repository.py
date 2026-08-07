@@ -155,13 +155,14 @@ def upsert_snapshot(db: Session, payload: DeviceSnapshotIn) -> dict:
             tool.image_url = image_url
 
         if status_changed:
-            # 状态变化的工具：更新状态并触发完整损坏检测
+            # 状态变化的工具：更新状态
             slot.current_status = item.status
             slot.confidence = item.confidence
             if tool is not None:
                 tool.status = item.status
 
-            if image_url:
+            # 只有归还（变为present）时才做损坏检测，借走时不做（空槽没有工具）
+            if item.status == "present" and image_url:
                 inspection = create_damage_inspection(
                     db,
                     DamageInspectionCreate(
@@ -177,7 +178,7 @@ def upsert_snapshot(db: Session, payload: DeviceSnapshotIn) -> dict:
                 )
                 damage_inspection_ids.append(inspection["id"])
                 logger.info(
-                    "Created damage inspection %s for device %s slot %s tool %s (status changed)",
+                    "Created damage inspection %s for device %s slot %s tool %s (returned, full check)",
                     inspection["id"],
                     device.device_code,
                     item.slot_no,
@@ -648,6 +649,9 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
                           "仅白色", "未见任何工具", "无法辨识", "无工具"]
     if llm_summary and any(ind in llm_summary for ind in no_tool_indicators):
         logger.info("kimi-k3 报告图中无工具，删除检测记录 %s: %s", task_id, llm_summary[:60])
+        # 无工具时不更新 last_anomaly_score（保持上次的分数，避免空槽高分影响下次比较）
+        if slot:
+            slot.last_anomaly_score = old_score  # 保持原值不变
         if cropped_path and os.path.exists(cropped_path):
             os.remove(cropped_path)
         db.delete(row)
