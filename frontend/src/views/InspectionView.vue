@@ -33,8 +33,7 @@
         <div v-for="tool in toolSummary" :key="tool.tool_id" class="tool-damage-card" :class="tool.latest_status">
           <div class="td-img-wrap">
             <img v-if="tool.image_url" :src="tool.image_url" class="td-img" />
-            <img v-if="tool.heatmap_url" :src="tool.heatmap_url" class="td-img heatmap-overlay" :title="'异常热力图（悬停查看）'" />
-            <div v-else-if="!tool.image_url" class="td-img-ph">{{ tool.tool_name.charAt(0) }}</div>
+            <div v-else class="td-img-ph">{{ tool.tool_name.charAt(0) }}</div>
           </div>
           <div class="td-info">
             <div class="td-name">{{ tool.tool_name }}</div>
@@ -42,9 +41,10 @@
             <span class="badge" :class="tool.latest_status">{{ statusText(tool.latest_status) }}</span>
             <div class="td-summary">{{ tool.latest_summary || '尚未检测' }}</div>
             <div class="td-count" v-if="tool.task_count > 0">历史检测 {{ tool.task_count }} 次</div>
-          <div class="td-actions">
-            <button class="btn small danger" @click="removeTool(tool.tool_code)">删除</button>
-          </div>
+            <div class="td-actions">
+              <button v-if="tool.heatmap_url" class="btn small" @click="showHeatmap(tool.image_url, tool.heatmap_url, tool.tool_name)">热力图</button>
+              <button class="btn small danger" @click="removeTool(tool.tool_code)">删除</button>
+            </div>
           </div>
         </div>
       </div>
@@ -61,7 +61,6 @@
           <div class="task-img-wrap">
             <img v-if="task.image_url" :src="task.image_url" class="task-img" />
             <div v-else class="task-img-ph">?</div>
-            <img v-if="task.heatmap_url" :src="task.heatmap_url" class="task-img heatmap-overlay" :title="'异常热力图'" />
           </div>
           <div class="task-info">
             <div class="task-name">{{ task.tool_name }} <span class="muted">({{ task.tool_code || '-' }})</span></div>
@@ -74,6 +73,7 @@
             <span v-if="task.confidence != null" class="muted">{{ Math.round(task.confidence * 100) }}%</span>
           </div>
           <div class="task-actions">
+            <button v-if="task.heatmap_url" class="btn small" @click="showHeatmap(task.image_url, task.heatmap_url, task.tool_name)">热力图</button>
             <button class="btn small" :disabled="analyzingId === task.id" @click="analyze(task.id)">
               {{ analyzingId === task.id ? '分析中...' : '重新分析' }}
             </button>
@@ -85,11 +85,31 @@
         </div>
       </div>
     </section>
+
+    <!-- 热力图查看弹窗 -->
+    <div v-if="heatmapModal.visible" class="heatmap-modal" @click="heatmapModal.visible = false">
+      <div class="heatmap-modal-content" @click.stop>
+        <div class="heatmap-modal-header">
+          <span class="heatmap-modal-title">{{ heatmapModal.title }} — 异常检测热力图</span>
+          <button class="heatmap-modal-close" @click="heatmapModal.visible = false">×</button>
+        </div>
+        <div class="heatmap-modal-body">
+          <div class="heatmap-panel">
+            <div class="heatmap-panel-label">工具原图</div>
+            <img v-if="heatmapModal.imageUrl" :src="heatmapModal.imageUrl" class="heatmap-modal-img" />
+          </div>
+          <div class="heatmap-panel">
+            <div class="heatmap-panel-label">异常热力图（红=高异常，蓝=低异常）</div>
+            <img :src="heatmapModal.heatmapUrl" class="heatmap-modal-img" />
+          </div>
+        </div>
+      </div>
+    </div>
   </div>
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, ref, reactive } from 'vue';
 import {
   analyzeDamageInspection,
   deleteDamageInspection,
@@ -107,6 +127,20 @@ const uploading = ref(false);
 const uploadProgress = ref('');
 const analyzingId = ref<number | null>(null);
 const uploadInput = ref<HTMLInputElement | null>(null);
+
+const heatmapModal = reactive({
+  visible: false,
+  imageUrl: '',
+  heatmapUrl: '',
+  title: '',
+});
+
+function showHeatmap(imageUrl: string, heatmapUrl: string, toolName: string) {
+  heatmapModal.imageUrl = imageUrl;
+  heatmapModal.heatmapUrl = heatmapUrl;
+  heatmapModal.title = toolName;
+  heatmapModal.visible = true;
+}
 
 function statusText(status: string) {
   const map: Record<string, string> = { pending: '待分析', normal: '正常', damaged: '损坏', suspected: '疑似异常', failed: '失败' };
@@ -183,7 +217,6 @@ async function analyze(id: number) {
   analyzingId.value = id;
   try {
     await analyzeDamageInspection(id);
-    // 轮询等待完成
     for (let i = 0; i < 90; i++) {
       await new Promise(r => setTimeout(r, 2000));
       try {
@@ -265,19 +298,8 @@ onMounted(loadAll);
   background: rgba(0, 0, 0, 0.3);
   display: flex; align-items: center; justify-content: center;
   overflow: hidden;
-  position: relative;
 }
 .td-img { max-height: 100%; max-width: 100%; object-fit: contain; }
-.heatmap-overlay {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  object-fit: cover;
-  opacity: 0;
-  transition: opacity 0.3s;
-  cursor: pointer;
-}
-.td-img-wrap:hover .heatmap-overlay { opacity: 0.85; }
 .td-img-ph {
   width: 36px; height: 36px; border-radius: 50%;
   background: rgba(96, 165, 250, 0.14);
@@ -291,12 +313,12 @@ onMounted(loadAll);
 .td-count { font-size: 11px; color: #94a3b8; margin-top: 4px; }
 .td-actions {
   margin-top: 8px;
+  display: flex;
+  gap: 6px;
   opacity: 0;
   transition: opacity 0.2s;
 }
-.tool-damage-card:hover .td-actions {
-  opacity: 1;
-}
+.tool-damage-card:hover .td-actions { opacity: 1; }
 
 .task-list { display: flex; flex-direction: column; gap: 8px; }
 .task-row {
@@ -314,24 +336,77 @@ onMounted(loadAll);
   background: rgba(0, 0, 0, 0.3);
   flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
-  position: relative;
 }
 .task-img { max-width: 100%; max-height: 100%; object-fit: contain; }
-.heatmap-overlay {
-  position: absolute;
-  top: 0; left: 0;
-  width: 100%; height: 100%;
-  object-fit: cover;
-  opacity: 0;
-  transition: opacity 0.3s;
-  cursor: pointer;
-}
-.task-img-wrap:hover .heatmap-overlay { opacity: 0.8; }
 .task-img-ph { color: #94a3b8; font-size: 20px; }
 .task-info { flex: 1; }
 .task-name { font-weight: 600; font-size: 13px; }
 .task-summary { font-size: 12px; color: #94a3b8; margin: 2px 0; }
 .task-meta { font-size: 11px; color: #94a3b8; }
 .task-badges { display: flex; gap: 6px; align-items: center; }
-.task-actions { flex-shrink: 0; }
+.task-actions { flex-shrink: 0; display: flex; gap: 6px; }
+
+/* 热力图弹窗 */
+.heatmap-modal {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  background: rgba(0, 0, 0, 0.8);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+.heatmap-modal-content {
+  background: #1e293b;
+  border-radius: 12px;
+  max-width: 900px;
+  max-height: 90vh;
+  overflow: hidden;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+}
+.heatmap-modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 16px 20px;
+  border-bottom: 1px solid rgba(148, 163, 184, 0.15);
+}
+.heatmap-modal-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #e2e8f0;
+}
+.heatmap-modal-close {
+  background: none;
+  border: none;
+  color: #94a3b8;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 4px;
+  line-height: 1;
+}
+.heatmap-modal-close:hover { color: #e2e8f0; }
+.heatmap-modal-body {
+  display: flex;
+  gap: 16px;
+  padding: 20px;
+}
+.heatmap-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+.heatmap-panel-label {
+  font-size: 12px;
+  color: #94a3b8;
+  margin-bottom: 8px;
+}
+.heatmap-modal-img {
+  max-width: 100%;
+  max-height: 60vh;
+  border-radius: 8px;
+  object-fit: contain;
+}
 </style>
