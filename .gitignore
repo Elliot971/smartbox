@@ -1,0 +1,8 @@
+.env.production
+uploads/
+__pycache__/
+*.pyc
+node_modules/
+dist/
+dist_backup_*/
+frontend/*.tar.gz

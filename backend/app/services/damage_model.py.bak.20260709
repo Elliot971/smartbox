@@ -1,0 +1,92 @@
+import httpx
+
+from app.core.config import get_settings
+
+
+class DamageModelService:
+    def __init__(self) -> None:
+        self.settings = get_settings()
+
+    def analyze(self, task: dict) -> dict:
+        if self.settings.damage_model_url:
+            return self._remote_analyze(task)
+        return self._mock_analyze(task)
+
+    def _remote_analyze(self, task: dict) -> dict:
+        headers = {}
+        if self.settings.damage_model_api_key:
+            headers["Authorization"] = f"Bearer {self.settings.damage_model_api_key}"
+
+        import os
+
+        backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        image_url = task.get("image_url", "")
+        file_path = os.path.join(backend_root, image_url.lstrip("/"))
+
+        url = self.settings.damage_model_url.rstrip("/") + "/predict-upload"
+        with open(file_path, "rb") as f:
+            files = {"file": (os.path.basename(file_path), f, "image/jpeg")}
+            data = {
+                "task_id": str(task.get("id", "")),
+                "tool_code": task.get("tool_code", ""),
+                "tool_name": task.get("tool_name", ""),
+                "tool_class": task.get("tool_class", ""),
+            }
+            with httpx.Client(timeout=self.settings.damage_model_timeout) as client:
+                resp = client.post(url, files=files, data=data, headers=headers)
+                resp.raise_for_status()
+                result = resp.json()
+        return self._normalize(result)
+
+    def _mock_analyze(self, task: dict) -> dict:
+        text = " ".join(
+            [
+                task.get("tool_code", ""),
+                task.get("tool_name", ""),
+                task.get("tool_class", ""),
+                task.get("image_url", ""),
+            ]
+        ).lower()
+        damaged_words = ("broken", "damage", "damaged", "crack", "裂", "断", "缺", "坏", "破损")
+        suspected_words = ("wear", "scratch", "rust", "磨", "划", "锈", "变形")
+        if any(word in text for word in damaged_words):
+            return {
+                "status": "damaged",
+                "severity": "high",
+                "confidence": 0.88,
+                "summary": "云端检测结果：疑似存在明显损坏，建议拦截入库并人工复核。",
+                "raw_result": {"provider": "mock-cloud-damage-detector"},
+            }
+        if any(word in text for word in suspected_words):
+            return {
+                "status": "suspected",
+                "severity": "medium",
+                "confidence": 0.73,
+                "summary": "云端检测结果：存在磨损或轻微异常特征，建议人工确认后再入库。",
+                "raw_result": {"provider": "mock-cloud-damage-detector"},
+            }
+        return {
+            "status": "normal",
+            "severity": "low",
+            "confidence": 0.66,
+            "summary": "云端检测结果：未发现明显损坏特征，可作为正常工具记录。",
+            "raw_result": {"provider": "mock-cloud-damage-detector"},
+        }
+
+    def _normalize(self, data: dict) -> dict:
+        status = data.get("status") or data.get("label") or "suspected"
+        if status not in {"normal", "suspected", "damaged", "failed"}:
+            status = "suspected"
+        severity = data.get("severity")
+        if severity not in {"low", "medium", "high"}:
+            severity = "high" if status == "damaged" else "medium" if status == "suspected" else "low"
+        return {
+            "status": status,
+            "severity": severity,
+            "confidence": data.get("confidence"),
+            "summary": data.get("summary") or data.get("message") or "云端损坏检测已完成。",
+            "raw_result": data,
+        }
+
+
+damage_model_service = DamageModelService()

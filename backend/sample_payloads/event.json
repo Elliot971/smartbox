@@ -1,0 +1,21 @@
+{
+  "event_id": "FOD-TOOLBOX-001-20260617103022-0001",
+  "device_code": "FOD-TOOLBOX-001",
+  "operator": {
+    "user_code": "EMP023",
+    "name": "张三",
+    "auth_type": "face"
+  },
+  "opened_at": "2026-06-17T10:30:22+08:00",
+  "closed_at": "2026-06-17T10:31:10+08:00",
+  "event_type": "operation",
+  "result_type": "anomaly",
+  "borrowed": [
+    { "slot_no": 2, "tool_code": "S-002", "tool_name": "螺丝刀", "tool_class": "screwdriver", "confidence": 0.91 }
+  ],
+  "returned": [],
+  "anomalies": [
+    { "slot_no": 4, "tool_code": "C-004", "tool_name": "卡尺", "tool_class": "caliper", "confidence": 0.51 }
+  ]
+}
+

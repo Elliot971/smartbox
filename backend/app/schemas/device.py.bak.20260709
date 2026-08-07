@@ -1,0 +1,57 @@
+from datetime import datetime
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+class OperatorIn(BaseModel):
+    user_code: str = ""
+    name: str = ""
+    auth_type: str = "face"
+
+
+class SlotSnapshotIn(BaseModel):
+    slot_no: int
+    tool_code: str = ""
+    tool_name: str = ""
+    tool_class: str = ""
+    status: str
+    confidence: float | None = None
+
+
+class DeviceSnapshotIn(BaseModel):
+    device_code: str
+    timestamp: datetime | None = None
+    firmware_version: str = ""
+    total: int = 0
+    available: int = 0
+    slots: list[SlotSnapshotIn] = Field(default_factory=list)
+
+
+class ToolChangeIn(BaseModel):
+    slot_no: int | None = None
+    tool_code: str = ""
+    tool_name: str = ""
+    tool_class: str = ""
+    confidence: float | None = None
+
+
+class DeviceEventIn(BaseModel):
+    event_id: str
+    device_code: str
+    operator: OperatorIn = Field(default_factory=OperatorIn)
+    event_type: str = "operation"
+    result_type: str = ""
+    opened_at: datetime | None = None
+    closed_at: datetime | None = None
+    borrowed: list[ToolChangeIn] = Field(default_factory=list)
+    returned: list[ToolChangeIn] = Field(default_factory=list)
+    anomalies: list[ToolChangeIn] = Field(default_factory=list)
+    raw: dict[str, Any] = Field(default_factory=dict)
+
+
+class ApiResult(BaseModel):
+    ok: bool = True
+    message: str = "ok"
+    data: dict[str, Any] = Field(default_factory=dict)
+

@@ -1,0 +1,345 @@
+from datetime import date, datetime
+
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session
+
+from app.models.domain import (
+    Alert,
+    CabinetSlot,
+    DamageInspection,
+    Device,
+    LlmAnalysis,
+    OperationEvent,
+    OperationEventItem,
+    Tool,
+    User,
+)
+from app.schemas.device import DeviceEventIn, DeviceSnapshotIn, ToolChangeIn
+from app.schemas.inspection import DamageInspectionCreate
+from app.services.damage_model import damage_model_service
+from app.services.llm import llm_service
+
+
+def get_or_create_device(db: Session, device_code: str, firmware_version: str = "") -> Device:
+    device = db.scalar(select(Device).where(Device.device_code == device_code))
+    if device is None:
+        device = Device(device_code=device_code, name=device_code, location="航空维修车间")
+        db.add(device)
+        db.flush()
+    device.online_status = "online"
+    device.last_seen_at = datetime.utcnow()
+    if firmware_version:
+        device.firmware_version = firmware_version
+    return device
+
+
+def get_or_create_tool(db: Session, tool_code: str, tool_name: str, tool_class: str = "") -> Tool | None:
+    if not tool_code:
+        return None
+    tool = db.scalar(select(Tool).where(Tool.tool_code == tool_code))
+    if tool is None:
+        tool = Tool(tool_code=tool_code, tool_name=tool_name or tool_code, tool_class=tool_class)
+        db.add(tool)
+        db.flush()
+    else:
+        if tool_name:
+            tool.tool_name = tool_name
+        if tool_class:
+            tool.tool_class = tool_class
+    return tool
+
+
+def get_or_create_user(db: Session, user_code: str, name: str) -> User | None:
+    if not user_code and not name:
+        return None
+    code = user_code or name
+    user = db.scalar(select(User).where(User.user_code == code))
+    if user is None:
+        user = User(user_code=code, name=name or code)
+        db.add(user)
+        db.flush()
+    elif name:
+        user.name = name
+    return user
+
+
+def upsert_snapshot(db: Session, payload: DeviceSnapshotIn) -> dict:
+    device = get_or_create_device(db, payload.device_code, payload.firmware_version)
+    available = 0
+    for item in payload.slots:
+        tool = get_or_create_tool(db, item.tool_code, item.tool_name, item.tool_class)
+        slot = db.scalar(
+            select(CabinetSlot).where(CabinetSlot.device_id == device.id, CabinetSlot.slot_no == item.slot_no)
+        )
+        if slot is None:
+            slot = CabinetSlot(device_id=device.id, slot_no=item.slot_no)
+            db.add(slot)
+            db.flush()
+        slot.tool_id = tool.id if tool else None
+        slot.expected_class = item.tool_class or slot.expected_class
+        slot.current_status = item.status
+        slot.confidence = item.confidence
+        slot.updated_at = payload.timestamp.replace(tzinfo=None) if payload.timestamp else datetime.utcnow()
+        if tool is not None:
+            tool.status = item.status
+        if item.status in {"present", "available"}:
+            available += 1
+
+    db.commit()
+    return {"device_id": device.id, "device_code": device.device_code, "available": available, "total": len(payload.slots)}
+
+
+def _add_event_items(db: Session, event: OperationEvent, action: str, items: list[ToolChangeIn]) -> None:
+    for item in items:
+        db.add(
+            OperationEventItem(
+                event_id=event.id,
+                slot_no=item.slot_no,
+                tool_code=item.tool_code,
+                tool_name=item.tool_name,
+                action=action,
+                confidence=item.confidence,
+            )
+        )
+
+
+def create_operation_event(db: Session, payload: DeviceEventIn) -> tuple[OperationEvent, bool]:
+    existing = db.scalar(select(OperationEvent).where(OperationEvent.event_id == payload.event_id))
+    if existing is not None:
+        return existing, False
+
+    device = get_or_create_device(db, payload.device_code)
+    user = get_or_create_user(db, payload.operator.user_code, payload.operator.name)
+    event = OperationEvent(
+        event_id=payload.event_id,
+        device_id=device.id,
+        operator_id=user.id if user else None,
+        event_type=payload.event_type,
+        result_type=payload.result_type,
+        opened_at=payload.opened_at.replace(tzinfo=None) if payload.opened_at else None,
+        closed_at=payload.closed_at.replace(tzinfo=None) if payload.closed_at else None,
+        raw_payload=payload.model_dump(mode="json"),
+    )
+    db.add(event)
+    db.flush()
+    _add_event_items(db, event, "borrowed", payload.borrowed)
+    _add_event_items(db, event, "returned", payload.returned)
+    _add_event_items(db, event, "anomaly", payload.anomalies)
+
+    for item in payload.borrowed:
+        tool = get_or_create_tool(db, item.tool_code, item.tool_name, item.tool_class)
+        if tool:
+            tool.status = "borrowed"
+    for item in payload.returned:
+        tool = get_or_create_tool(db, item.tool_code, item.tool_name, item.tool_class)
+        if tool:
+            tool.status = "present"
+
+    if payload.anomalies or "anomaly" in payload.result_type:
+        db.add(
+            Alert(
+                device_id=device.id,
+                operation_event_id=event.id,
+                alert_type="operation_anomaly",
+                severity="high" if payload.anomalies else "medium",
+                title="工具箱操作异常",
+                description=f"事件 {payload.event_id} 产生 {len(payload.anomalies)} 个异常项",
+            )
+        )
+
+    db.commit()
+    db.refresh(event)
+    return event, True
+
+
+def dashboard_summary(db: Session) -> dict:
+    today_start = datetime.combine(date.today(), datetime.min.time())
+    devices_total = db.scalar(select(func.count(Device.id))) or 0
+    online_devices = db.scalar(select(func.count(Device.id)).where(Device.online_status == "online")) or 0
+    tools_total = db.scalar(select(func.count(Tool.id))) or 0
+    tools_available = db.scalar(select(func.count(Tool.id)).where(Tool.status.in_(["present", "available"]))) or 0
+    open_alerts = db.scalar(select(func.count(Alert.id)).where(Alert.status == "open")) or 0
+    today_events = db.scalar(select(func.count(OperationEvent.id)).where(OperationEvent.synced_at >= today_start)) or 0
+    return {
+        "devices_total": devices_total,
+        "online_devices": online_devices,
+        "tools_total": tools_total,
+        "tools_available": tools_available,
+        "open_alerts": open_alerts,
+        "today_events": today_events,
+    }
+
+
+def latest_slots(db: Session, device_code: str | None = None) -> list[dict]:
+    query = select(CabinetSlot, Device, Tool).join(Device, CabinetSlot.device_id == Device.id).join(
+        Tool, CabinetSlot.tool_id == Tool.id, isouter=True
+    )
+    if device_code:
+        query = query.where(Device.device_code == device_code)
+    query = query.order_by(Device.device_code, CabinetSlot.slot_no)
+    rows = db.execute(query).all()
+    return [
+        {
+            "device_code": device.device_code,
+            "slot_no": slot.slot_no,
+            "tool_code": tool.tool_code if tool else "",
+            "tool_name": tool.tool_name if tool else "",
+            "tool_class": tool.tool_class if tool else slot.expected_class,
+            "status": slot.current_status,
+            "confidence": slot.confidence,
+            "updated_at": slot.updated_at.isoformat() if slot.updated_at else None,
+        }
+        for slot, device, tool in rows
+    ]
+
+
+def latest_events(db: Session, limit: int = 30) -> list[dict]:
+    rows = db.execute(
+        select(OperationEvent, Device, User)
+        .join(Device, OperationEvent.device_id == Device.id)
+        .join(User, OperationEvent.operator_id == User.id, isouter=True)
+        .order_by(OperationEvent.synced_at.desc())
+        .limit(limit)
+    ).all()
+    return [
+        {
+            "id": event.id,
+            "event_id": event.event_id,
+            "device_code": device.device_code,
+            "operator_name": user.name if user else "",
+            "result_type": event.result_type,
+            "opened_at": event.opened_at.isoformat() if event.opened_at else None,
+            "closed_at": event.closed_at.isoformat() if event.closed_at else None,
+            "synced_at": event.synced_at.isoformat(),
+        }
+        for event, device, user in rows
+    ]
+
+
+def latest_alerts(db: Session, limit: int = 30) -> list[dict]:
+    rows = db.execute(
+        select(Alert, Device).join(Device, Alert.device_id == Device.id).order_by(Alert.created_at.desc()).limit(limit)
+    ).all()
+    return [
+        {
+            "id": alert.id,
+            "device_code": device.device_code,
+            "alert_type": alert.alert_type,
+            "severity": alert.severity,
+            "title": alert.title,
+            "description": alert.description,
+            "status": alert.status,
+            "created_at": alert.created_at.isoformat(),
+        }
+        for alert, device in rows
+    ]
+
+
+def _inspection_to_dict(row: DamageInspection, device: Device) -> dict:
+    return {
+        "id": row.id,
+        "device_code": device.device_code,
+        "tool_code": row.tool_code,
+        "tool_name": row.tool_name,
+        "tool_class": row.tool_class,
+        "image_url": row.image_url,
+        "status": row.status,
+        "severity": row.severity,
+        "confidence": row.confidence,
+        "summary": row.summary,
+        "raw_result": row.raw_result or {},
+        "created_at": row.created_at.isoformat(),
+        "updated_at": row.updated_at.isoformat(),
+    }
+
+
+def latest_damage_inspections(db: Session, limit: int = 50) -> list[dict]:
+    rows = db.execute(
+        select(DamageInspection, Device)
+        .join(Device, DamageInspection.device_id == Device.id)
+        .order_by(DamageInspection.updated_at.desc(), DamageInspection.id.desc())
+        .limit(limit)
+    ).all()
+    return [_inspection_to_dict(row, device) for row, device in rows]
+
+
+def create_damage_inspection(db: Session, payload: DamageInspectionCreate) -> dict:
+    device = get_or_create_device(db, payload.device_code)
+    tool = get_or_create_tool(db, payload.tool_code, payload.tool_name, payload.tool_class)
+    row = DamageInspection(
+        device_id=device.id,
+        tool_code=tool.tool_code if tool else payload.tool_code,
+        tool_name=tool.tool_name if tool else payload.tool_name,
+        tool_class=tool.tool_class if tool else payload.tool_class,
+        image_url=payload.image_url,
+        summary="等待云端损坏检测模型分析",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _inspection_to_dict(row, device)
+
+
+def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
+    row = db.get(DamageInspection, task_id)
+    if row is None:
+        return None
+
+    device = db.get(Device, row.device_id)
+    result = damage_model_service.analyze(_inspection_to_dict(row, device))
+
+    # Generate LLM natural language report
+    import os
+    backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    image_path = os.path.join(backend_root, row.image_url.lstrip("/")) if row.image_url else ""
+    try:
+        llm_summary = llm_service.generate_damage_report_sync(
+            tool_name=row.tool_name or row.tool_code,
+            tool_class=row.tool_class,
+            status=result["status"],
+            anomaly_score=result.get("raw_result", {}).get("anomaly_score", 0.5),
+            model_used=result.get("raw_result", {}).get("model_used", "unknown"),
+            severity=result["severity"],
+            confidence=result.get("confidence", 0.5),
+            image_path=image_path,
+        )
+    except Exception:
+        llm_summary = result["summary"]
+
+    row.status = result["status"]
+    row.severity = result["severity"]
+    row.confidence = result["confidence"]
+    row.summary = llm_summary
+    row.raw_result = result["raw_result"]
+    row.updated_at = datetime.utcnow()
+
+    if row.status in {"damaged", "suspected"}:
+        db.add(
+            Alert(
+                device_id=row.device_id,
+                alert_type="tool_damage",
+                severity=row.severity,
+                title=f"工具损坏检测：{row.tool_name or row.tool_code}",
+                description=row.summary,
+            )
+        )
+
+    db.commit()
+    return _inspection_to_dict(row, device)
+
+
+def save_llm_analysis(
+    db: Session, target_type: str, target_id: int, provider: str, prompt: str, raw_response: str, risk_level: str
+) -> LlmAnalysis:
+    row = LlmAnalysis(
+        target_type=target_type,
+        target_id=target_id,
+        model_provider=provider,
+        prompt=prompt,
+        response=raw_response,
+        risk_level=risk_level,
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row

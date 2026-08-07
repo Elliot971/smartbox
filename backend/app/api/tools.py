@@ -1,0 +1,106 @@
+import os
+import uuid
+
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, UploadFile
+from fastapi.responses import FileResponse
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from app.db.session import SessionLocal, get_db
+from app.models.domain import Tool
+from app.schemas.inspection import DamageInspectionCreate
+from app.schemas.query import ToolIn, ToolOut
+from app.services.repository import analyze_damage_inspection, create_damage_inspection
+
+router = APIRouter(prefix="/tools", tags=["tools"])
+
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "tool_images")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+
+def _analyze_tool_image_bg(inspection_id: int) -> None:
+    db = SessionLocal()
+    try:
+        analyze_damage_inspection(db, inspection_id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Background analysis failed for tool image inspection %s", inspection_id)
+    finally:
+        db.close()
+
+
+@router.get("", response_model=list[ToolOut])
+def list_tools(db: Session = Depends(get_db)) -> list[Tool]:
+    rows = db.execute(select(Tool).order_by(Tool.id)).scalars().all()
+    return list(rows)
+
+
+@router.post("", response_model=ToolOut)
+def create_tool(payload: ToolIn, db: Session = Depends(get_db)) -> Tool:
+    existing = db.scalar(select(Tool).where(Tool.tool_code == payload.tool_code))
+    if existing is not None:
+        raise HTTPException(status_code=409, detail=f"tool_code '{payload.tool_code}' already exists")
+    tool = Tool(**payload.model_dump())
+    db.add(tool)
+    db.commit()
+    db.refresh(tool)
+    return tool
+
+
+@router.put("/{tool_id}", response_model=ToolOut)
+def update_tool(tool_id: int, payload: ToolIn, db: Session = Depends(get_db)) -> Tool:
+    tool = db.get(Tool, tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="tool not found")
+    for field, value in payload.model_dump().items():
+        setattr(tool, field, value)
+    db.commit()
+    db.refresh(tool)
+    return tool
+
+
+@router.delete("/{tool_id}")
+def delete_tool(tool_id: int, db: Session = Depends(get_db)) -> dict:
+    tool = db.get(Tool, tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="tool not found")
+    db.delete(tool)
+    db.commit()
+    return {"ok": True}
+
+
+@router.post("/{tool_id}/image", response_model=ToolOut)
+def upload_tool_image(
+    tool_id: int,
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+) -> Tool:
+    tool = db.get(Tool, tool_id)
+    if tool is None:
+        raise HTTPException(status_code=404, detail="tool not found")
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="file must be an image")
+    ext = os.path.splitext(file.filename or "")[1] or ".jpg"
+    filename = f"tool_{tool_id}_{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(UPLOAD_DIR, filename)
+    with open(filepath, "wb") as f:
+        f.write(file.file.read())
+    tool.image_url = f"/uploads/tool_images/{filename}"
+    db.commit()
+    db.refresh(tool)
+
+    # Web 端上传工具图片后，自动创建损坏检测任务并排队分析
+    inspection = create_damage_inspection(
+        db,
+        DamageInspectionCreate(
+            device_code="FOD-TOOLBOX-001",
+            tool_id=tool.id,
+            tool_code=tool.tool_code,
+            tool_name=tool.tool_name,
+            tool_class=tool.tool_class,
+            image_url=tool.image_url,
+        ),
+    )
+    background_tasks.add_task(_analyze_tool_image_bg, inspection["id"])
+    return tool

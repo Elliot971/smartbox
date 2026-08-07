@@ -1,0 +1,66 @@
+import os
+
+from fastapi import Depends, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from sqlalchemy.exc import SQLAlchemyError
+
+from app.api import ai, auth, device, inspection, query, stream, tools, upload
+from app.core.auth import get_current_user
+from app.core.config import get_settings
+from app.db.session import Base, engine
+from app.models import domain  # noqa: F401
+
+
+settings = get_settings()
+
+app = FastAPI(title=settings.app_name)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origin_list,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads")
+os.makedirs(UPLOADS_DIR, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=UPLOADS_DIR), name="uploads")
+
+
+@app.on_event("startup")
+def on_startup() -> None:
+    try:
+        Base.metadata.create_all(bind=engine)
+    except SQLAlchemyError as exc:
+        print(f"[WARN] Database is not ready, API starts without table creation: {exc}")
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"ok": True, "app": settings.app_name, "env": settings.app_env}
+
+
+@app.get("/")
+def root() -> dict:
+    return {
+        "ok": True,
+        "message": "FOD smart toolbox API is running. Open the Web UI at http://127.0.0.1:5173, or API docs at /docs.",
+        "docs": "/docs",
+        "health": "/health",
+        "web_dev_url": "http://127.0.0.1:5173",
+    }
+
+
+# Public endpoints: device uploads use X-Device-Key; health is public.
+app.include_router(device.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
+
+# Admin endpoints: require JWT.
+admin_dep = [Depends(get_current_user)]
+app.include_router(query.router, prefix="/api", dependencies=admin_dep)
+app.include_router(ai.router, prefix="/api", dependencies=admin_dep)
+app.include_router(inspection.router, prefix="/api", dependencies=admin_dep)
+app.include_router(stream.router, prefix="/api", dependencies=admin_dep)
+app.include_router(tools.router, prefix="/api", dependencies=admin_dep)
+app.include_router(upload.router, prefix="/api", dependencies=admin_dep)

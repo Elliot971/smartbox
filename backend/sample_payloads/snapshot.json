@@ -1,0 +1,14 @@
+{
+  "device_code": "FOD-TOOLBOX-001",
+  "timestamp": "2026-06-17T10:30:00+08:00",
+  "firmware_version": "p4-demo-0.1.0",
+  "total": 12,
+  "available": 10,
+  "slots": [
+    { "slot_no": 1, "tool_code": "W-001", "tool_name": "扭矩扳手", "tool_class": "torque_wrench", "status": "present", "confidence": 0.96, "image_url": "/uploads/device_images/abc123.jpg", "bbox": [0.10, 0.10, 0.35, 0.60] },
+    { "slot_no": 2, "tool_code": "S-002", "tool_name": "螺丝刀", "tool_class": "screwdriver", "status": "borrowed", "confidence": 0.91 },
+    { "slot_no": 3, "tool_code": "P-003", "tool_name": "钳子", "tool_class": "pliers", "status": "present", "confidence": 0.94, "image_url": "/uploads/device_images/abc123.jpg", "bbox": [0.40, 0.10, 0.65, 0.60] },
+    { "slot_no": 4, "tool_code": "C-004", "tool_name": "卡尺", "tool_class": "caliper", "status": "uncertain", "confidence": 0.51 }
+  ]
+}
+

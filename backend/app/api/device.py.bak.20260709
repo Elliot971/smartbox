@@ -1,0 +1,25 @@
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+
+from app.core.security import verify_device_key
+from app.db.session import get_db
+from app.schemas.device import ApiResult, DeviceEventIn, DeviceSnapshotIn
+from app.services.events import event_broker
+from app.services.repository import create_operation_event, upsert_snapshot
+
+router = APIRouter(prefix="/device", tags=["device"], dependencies=[Depends(verify_device_key)])
+
+
+@router.post("/snapshot", response_model=ApiResult)
+async def upload_snapshot(payload: DeviceSnapshotIn, db: Session = Depends(get_db)) -> ApiResult:
+    data = upsert_snapshot(db, payload)
+    await event_broker.publish("snapshot.updated", data)
+    return ApiResult(data=data)
+
+
+@router.post("/events", response_model=ApiResult)
+async def upload_event(payload: DeviceEventIn, db: Session = Depends(get_db)) -> ApiResult:
+    event, created = create_operation_event(db, payload)
+    data = {"id": event.id, "event_id": event.event_id, "created": created}
+    await event_broker.publish("event.created", data)
+    return ApiResult(data=data)

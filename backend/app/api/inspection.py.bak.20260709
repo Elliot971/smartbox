@@ -1,0 +1,102 @@
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from sqlalchemy import desc, select
+from sqlalchemy.orm import Session
+
+from app.db.session import get_db
+from app.models.domain import DamageInspection, Tool
+from app.schemas.inspection import (
+    DamageInspectionAnalyzeResponse,
+    DamageInspectionCreate,
+    DamageInspectionOut,
+    ToolDamageSummary,
+)
+from app.services.repository import analyze_damage_inspection, create_damage_inspection, latest_damage_inspections
+
+router = APIRouter(prefix="/inspection", tags=["inspection"])
+
+
+@router.get("/tasks", response_model=list[DamageInspectionOut])
+def get_tasks(limit: int = 50, db: Session = Depends(get_db)) -> list[dict]:
+    return latest_damage_inspections(db, limit)
+
+
+@router.post("/tasks", response_model=DamageInspectionOut)
+def create_task(payload: DamageInspectionCreate, db: Session = Depends(get_db)) -> dict:
+    return create_damage_inspection(db, payload)
+
+
+@router.post("/tasks/{task_id}/analyze", response_model=DamageInspectionAnalyzeResponse)
+def analyze_task(task_id: int, db: Session = Depends(get_db)) -> dict:
+    task = analyze_damage_inspection(db, task_id)
+    if task is None:
+        raise HTTPException(status_code=404, detail="inspection task not found")
+    return {"ok": True, "task": task}
+
+
+@router.delete("/tasks/{task_id}")
+def delete_task(task_id: int, db: Session = Depends(get_db)) -> dict:
+    row = db.get(DamageInspection, task_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="inspection task not found")
+    db.delete(row)
+    db.commit()
+    return {"ok": True, "deleted": task_id}
+
+
+@router.get("/tool-summary", response_model=list[ToolDamageSummary])
+def tool_damage_summary(db: Session = Depends(get_db)) -> list[dict]:
+    """返回每个有图片的工具的最新损坏检测结果"""
+    tools = db.execute(select(Tool).where(Tool.image_url != "").order_by(Tool.id)).scalars().all()
+    result = []
+    for tool in tools:
+        latest = db.scalar(
+            select(DamageInspection)
+            .where(DamageInspection.tool_code == tool.tool_code)
+            .order_by(desc(DamageInspection.id))
+        )
+        count = db.scalar(select(DamageInspection).where(DamageInspection.tool_code == tool.tool_code)) or 0
+        result.append({
+            "tool_id": tool.id,
+            "tool_code": tool.tool_code,
+            "tool_name": tool.tool_name,
+            "image_url": tool.image_url,
+            "latest_status": latest.status if latest else "pending",
+            "latest_severity": latest.severity if latest else "low",
+            "latest_summary": latest.summary if latest else "尚未检测",
+            "task_count": count if isinstance(count, int) else 0,
+        })
+    return result
+
+
+@router.post("/upload-and-analyze", response_model=DamageInspectionOut)
+async def upload_and_analyze(
+    file: UploadFile = File(...),
+    tool_code: str = Form(""),
+    tool_name: str = Form("上传检测"),
+    tool_class: str = Form(""),
+    db: Session = Depends(get_db),
+) -> dict:
+    """工人上传照片，自动创建检测任务并调用云端模型分析"""
+    if not file.content_type or not file.content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="file must be an image")
+
+    import os, uuid
+
+    upload_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", "inspections")
+    os.makedirs(upload_dir, exist_ok=True)
+    ext = os.path.splitext(file.filename or "")[1] or ".jpg"
+    filename = f"{uuid.uuid4().hex}{ext}"
+    filepath = os.path.join(upload_dir, filename)
+    with open(filepath, "wb") as f:
+        f.write(file.file.read())
+    image_url = f"/uploads/inspections/{filename}"
+
+    task = create_damage_inspection(db, DamageInspectionCreate(
+        device_code="FOD-TOOLBOX-001",
+        tool_code=tool_code,
+        tool_name=tool_name,
+        tool_class=tool_class,
+        image_url=image_url,
+    ))
+    analyzed = analyze_damage_inspection(db, task["id"])
+    return analyzed
