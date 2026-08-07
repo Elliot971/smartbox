@@ -42,12 +42,21 @@ def create_task(
     return task
 
 
-@router.post("/tasks/{task_id}/analyze", response_model=DamageInspectionAnalyzeResponse)
-def analyze_task(task_id: int, db: Session = Depends(get_db)) -> dict:
-    task = analyze_damage_inspection(db, task_id)
-    if task is None:
+@router.post("/tasks/{task_id}/analyze")
+async def analyze_task(
+    task_id: int,
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+) -> dict:
+    """异步重新分析，立即返回任务ID，后台执行"""
+    row = db.get(DamageInspection, task_id)
+    if row is None:
         raise HTTPException(status_code=404, detail="inspection task not found")
-    return {"ok": True, "task": task}
+    if row.status not in ("pending", "analyzing"):
+        row.status = "pending"
+        db.commit()
+    background_tasks.add_task(_analyze_task_bg, task_id)
+    return {"ok": True, "task_id": task_id, "message": "已提交重新分析"}
 
 
 @router.delete("/tasks/{task_id}")

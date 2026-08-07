@@ -33,7 +33,8 @@
         <div v-for="tool in toolSummary" :key="tool.tool_id" class="tool-damage-card" :class="tool.latest_status">
           <div class="td-img-wrap">
             <img v-if="tool.image_url" :src="tool.image_url" class="td-img" />
-            <div v-else class="td-img-ph">{{ tool.tool_name.charAt(0) }}</div>
+            <img v-if="tool.heatmap_url" :src="tool.heatmap_url" class="td-img heatmap-overlay" :title="'异常热力图（悬停查看）'" />
+            <div v-else-if="!tool.image_url" class="td-img-ph">{{ tool.tool_name.charAt(0) }}</div>
           </div>
           <div class="td-info">
             <div class="td-name">{{ tool.tool_name }}</div>
@@ -60,6 +61,7 @@
           <div class="task-img-wrap">
             <img v-if="task.image_url" :src="task.image_url" class="task-img" />
             <div v-else class="task-img-ph">?</div>
+            <img v-if="task.heatmap_url" :src="task.heatmap_url" class="task-img heatmap-overlay" :title="'异常热力图'" />
           </div>
           <div class="task-info">
             <div class="task-name">{{ task.tool_name }} <span class="muted">({{ task.tool_code || '-' }})</span></div>
@@ -73,7 +75,7 @@
           </div>
           <div class="task-actions">
             <button class="btn small" :disabled="analyzingId === task.id" @click="analyze(task.id)">
-              {{ analyzingId === task.id ? '分析中' : '重新分析' }}
+              {{ analyzingId === task.id ? '分析中...' : '重新分析' }}
             </button>
             <button class="btn small danger" @click="remove(task.id)">删除</button>
           </div>
@@ -144,22 +146,27 @@ async function doUpload(file: File) {
     const taskId = (res as any).task_id;
     if (taskId) {
       uploadProgress.value = '检测中...';
-      // 轮询检测状态
-      for (let i = 0; i < 60; i++) {
+      let done = false;
+      for (let i = 0; i < 90; i++) {
         await new Promise(r => setTimeout(r, 2000));
-        const task = tasks.value.find(t => t.id === taskId);
-        if (!task) {
-          await loadAll();
-          const updated = (await (await import('../api/client')).fetchDamageInspections(1))[0];
-          if (updated && updated.id === taskId && !['pending', 'analyzing'].includes(updated.status)) {
+        try {
+          const list = await fetchDamageInspections(1);
+          const t = list.find(x => x.id === taskId);
+          if (t && !['pending', 'analyzing'].includes(t.status)) {
             await loadAll();
+            done = true;
+            const statusMap: Record<string, string> = { normal: '正常', damaged: '损坏', suspected: '疑似异常', failed: '分析失败' };
+            uploadProgress.value = `检测完成：${statusMap[t.status] || t.status}`;
+            setTimeout(() => { uploading.value = false; }, 2000);
             break;
           }
-        } else if (!['pending', 'analyzing'].includes(task.status)) {
-          await loadAll();
-          break;
+        } catch {
+          // 轮询失败，继续
         }
         uploadProgress.value = `检测中... (${i * 2}s)`;
+      }
+      if (!done) {
+        await loadAll();
       }
     } else {
       await loadAll();
@@ -176,7 +183,20 @@ async function analyze(id: number) {
   analyzingId.value = id;
   try {
     await analyzeDamageInspection(id);
-    await loadAll();
+    // 轮询等待完成
+    for (let i = 0; i < 90; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      try {
+        const list = await fetchDamageInspections(1);
+        const t = list.find(x => x.id === id);
+        if (t && !['pending', 'analyzing'].includes(t.status)) {
+          await loadAll();
+          break;
+        }
+      } catch {
+        // 继续
+      }
+    }
   } catch (err: any) {
     alert('重新分析失败：' + (err?.message || '未知错误'));
   } finally {
@@ -245,8 +265,19 @@ onMounted(loadAll);
   background: rgba(0, 0, 0, 0.3);
   display: flex; align-items: center; justify-content: center;
   overflow: hidden;
+  position: relative;
 }
 .td-img { max-height: 100%; max-width: 100%; object-fit: contain; }
+.heatmap-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.3s;
+  cursor: pointer;
+}
+.td-img-wrap:hover .heatmap-overlay { opacity: 0.85; }
 .td-img-ph {
   width: 36px; height: 36px; border-radius: 50%;
   background: rgba(96, 165, 250, 0.14);
@@ -283,8 +314,19 @@ onMounted(loadAll);
   background: rgba(0, 0, 0, 0.3);
   flex-shrink: 0;
   display: flex; align-items: center; justify-content: center;
+  position: relative;
 }
 .task-img { max-width: 100%; max-height: 100%; object-fit: contain; }
+.heatmap-overlay {
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%; height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  transition: opacity 0.3s;
+  cursor: pointer;
+}
+.task-img-wrap:hover .heatmap-overlay { opacity: 0.8; }
 .task-img-ph { color: #94a3b8; font-size: 20px; }
 .task-info { flex: 1; }
 .task-name { font-weight: 600; font-size: 13px; }

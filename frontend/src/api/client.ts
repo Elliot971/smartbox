@@ -125,7 +125,7 @@ export async function createDamageInspection(payload: DamageInspectionCreate) {
 }
 
 export async function analyzeDamageInspection(id: number) {
-  return (await api.post<{ ok: boolean; task: DamageInspection }>(`/inspection/tasks/${id}/analyze`, null, { timeout: 180000 })).data.task;
+  return (await api.post<{ ok: boolean; task_id: number; message: string }>(`/inspection/tasks/${id}/analyze`, null, { timeout: 30000 })).data;
 }
 
 export async function deleteDamageInspection(id: number) {
