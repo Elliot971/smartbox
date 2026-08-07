@@ -90,6 +90,7 @@ def tool_damage_summary(db: Session = Depends(get_db)) -> list[dict]:
             "tool_code": tool.tool_code,
             "tool_name": tool.tool_name,
             "image_url": tool.image_url,
+            "heatmap_url": latest.heatmap_url if latest else "",
             "latest_status": latest.status if latest else "pending",
             "latest_severity": latest.severity if latest else "low",
             "latest_summary": latest.summary if latest else "尚未检测",
@@ -102,9 +103,9 @@ def tool_damage_summary(db: Session = Depends(get_db)) -> list[dict]:
 async def upload_and_analyze(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
-    tool_code: str = Form(""),
-    tool_name: str = Form("上传检测"),
-    tool_class: str = Form(""),
+    tool_code: str = "",
+    tool_name: str = "上传检测",
+    tool_class: str = "",
     db: Session = Depends(get_db),
 ) -> dict:
     """上传照片，立即返回任务ID，后台异步分析"""

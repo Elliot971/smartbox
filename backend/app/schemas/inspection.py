@@ -24,6 +24,7 @@ class DamageInspectionOut(BaseModel):
     tool_name: str
     tool_class: str
     image_url: str
+    heatmap_url: str = ""
     status: str
     severity: str
     confidence: float | None = None
@@ -44,6 +45,7 @@ class ToolDamageSummary(BaseModel):
     tool_code: str
     tool_name: str
     image_url: str
+    heatmap_url: str = ""
     latest_status: str = "pending"
     latest_severity: str = "low"
     latest_summary: str = ""

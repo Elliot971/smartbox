@@ -99,8 +99,12 @@ class DamageModelService:
         image_url = task.get("image_url", "")
         if cropped_path:
             file_path = cropped_path
+        elif image_url and os.path.isabs(image_url) and os.path.exists(image_url):
+            file_path = image_url
+        elif image_url:
+            file_path = os.path.join(backend_root, image_url.lstrip("/"))
         else:
-            file_path = os.path.join(backend_root, image_url.lstrip("/")) if image_url else ""
+            file_path = ""
 
         if not file_path or not os.path.exists(file_path):
             return self._mock_analyze(task)
@@ -242,6 +246,7 @@ class DamageModelService:
             "confidence": data.get("confidence"),
             "summary": data.get("summary") or data.get("message") or "云端损坏检测已完成。",
             "raw_result": data,
+            "heatmap_b64": data.get("heatmap_b64", ""),
         }
 
 

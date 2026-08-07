@@ -1,5 +1,6 @@
 import logging
 import os
+import time
 import threading
 from datetime import date, datetime, timedelta
 
@@ -497,6 +498,7 @@ def _inspection_to_dict(row: DamageInspection, device: Device) -> dict:
         "tool_name": row.tool_name,
         "tool_class": row.tool_class,
         "image_url": row.image_url,
+        "heatmap_url": row.heatmap_url,
         "status": row.status,
         "severity": row.severity,
         "confidence": row.confidence,
@@ -633,6 +635,26 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
     if slot:
         slot.last_anomaly_score = new_score
 
+    # Save heatmap image (from 4090 DINOv2) to uploads/heatmaps/
+    heatmap_b64 = result.get("heatmap_b64", "")
+    heatmap_path = ""
+    if heatmap_b64:
+        try:
+            import base64 as _b64
+            backend_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+            hm_dir = os.path.join(backend_root, "uploads", "heatmaps")
+            os.makedirs(hm_dir, exist_ok=True)
+            hm_filename = f"hm_{task_id}_{int(time.time())}.jpg"
+            hm_filepath = os.path.join(hm_dir, hm_filename)
+            with open(hm_filepath, "wb") as f:
+                f.write(_b64.b64decode(heatmap_b64))
+            heatmap_path = hm_filepath
+            row.heatmap_url = f"/uploads/heatmaps/{hm_filename}"
+            logger.info("热力图已保存: %s", heatmap_path)
+        except Exception:
+            logger.exception("热力图保存失败")
+            row.heatmap_url = ""
+
     # Generate LLM natural language report, preferring the cropped ROI if available.
     llm_image_path = cropped_path if cropped_path else ""
     if not llm_image_path and row.image_url:
@@ -648,6 +670,7 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
             severity=result["severity"],
             confidence=result.get("confidence", 0.5),
             image_path=llm_image_path,
+            heatmap_path=heatmap_path,
         )
     except Exception:
         llm_summary = result["summary"]

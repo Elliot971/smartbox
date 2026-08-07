@@ -134,6 +134,7 @@ class DamageInspection(Base):
     summary: Mapped[str] = mapped_column(Text, default="")
     raw_result: Mapped[dict] = mapped_column(JSON, default=dict)
     bbox: Mapped[list] = mapped_column(JSON, default=list)
+    heatmap_url: Mapped[str] = mapped_column(String(512), default="")
     created_at: Mapped[datetime] = mapped_column(DateTime, default=now_cn)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_cn)
 

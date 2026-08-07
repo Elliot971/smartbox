@@ -74,6 +74,7 @@ export interface DamageInspection {
   tool_name: string;
   tool_class: string;
   image_url: string;
+  heatmap_url?: string;
   status: string;
   severity: string;
   confidence: number | null;
@@ -140,6 +141,7 @@ export interface ToolDamageSummary {
   tool_code: string;
   tool_name: string;
   image_url: string;
+  heatmap_url?: string;
   latest_status: string;
   latest_severity: string;
   latest_summary: string;

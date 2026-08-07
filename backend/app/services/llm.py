@@ -223,7 +223,8 @@ class LlmService:
 
     def generate_damage_report_sync(
         self, tool_name: str, tool_class: str, status: str, anomaly_score: float,
-        model_used: str, severity: str, confidence: float, image_path: str = ""
+        model_used: str, severity: str, confidence: float, image_path: str = "",
+        heatmap_path: str = "",
     ) -> str:
         """根据损坏检测结果生成自然语言报告。优先用 kimi-k3 多模态看图，失败回退 GLM 文本。"""
         provider = self.settings.llm_provider.lower()
@@ -235,6 +236,7 @@ class LlmService:
             vision_report = self._generate_vision_report(
                 image_path, tool_name, tool_class, status,
                 anomaly_score, model_used, severity, confidence,
+                heatmap_path=heatmap_path,
             )
             if vision_report:
                 return vision_report
@@ -260,6 +262,7 @@ class LlmService:
     def _generate_vision_report(
         self, image_path: str, tool_name: str, tool_class: str, status: str,
         anomaly_score: float, model_used: str, severity: str, confidence: float,
+        heatmap_path: str = "",
     ) -> str:
         """用多模态视觉模型（kimi-k3）看图生成损坏检测报告。失败返回空串。"""
         self._rate_limit_vision()
@@ -272,6 +275,14 @@ class LlmService:
         except Exception:
             logger.exception("图片压缩失败: %s", image_path)
             return ""
+
+        # 加载热力图（如果有）
+        heatmap_b64 = ""
+        if heatmap_path and os.path.isfile(heatmap_path):
+            try:
+                heatmap_b64 = self._shrink_image_to_base64(heatmap_path, max_side=512)
+            except Exception:
+                logger.warning("热力图压缩失败: %s", heatmap_path)
 
         api_key = self.settings.llm_vision_api_key or self.settings.llm_api_key
         base_url = self.settings.llm_vision_base_url or self.settings.llm_base_url
@@ -286,20 +297,29 @@ class LlmService:
                 "请观察这张工具实拍照片，结合检测数据写一段损坏评估检查记录。"
                 "若照片中工具与台账类别明显不符，请在报告中指出。"
             )
+            if heatmap_b64:
+                user_text += "\n\n第二张图是异常检测热力图（红=高异常，蓝=低异常），用于辅助定位潜在损坏区域，请结合热力图关注高异常区域的具体状况。"
         else:
             user_text = (
                 "请识别照片中的工具类型，观察其外观状况，"
                 f"结合云端异常检测数据（异常分数 {anomaly_score:.2f}，自动判定 {status}）"
                 "写一段损坏评估检查记录，包含：工具类型、外观描述、风险等级、处置建议。"
             )
+            if heatmap_b64:
+                user_text += "\n\n第二张图是异常检测热力图（红=高异常，蓝=低异常），用于辅助定位潜在损坏区域，请结合热力图关注高异常区域的具体状况。"
         combined_text = DAMAGE_VISION_SYSTEM_PROMPT + "\n\n" + user_text
+        content_parts = [
+            {"type": "text", "text": combined_text},
+            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+        ]
+        if heatmap_b64:
+            content_parts.append(
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{heatmap_b64}"}},
+            )
         payload = {
             "model": model,
             "messages": [
-                {"role": "user", "content": [
-                    {"type": "text", "text": combined_text},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
-                ]},
+                {"role": "user", "content": content_parts},
             ],
             "max_tokens": 4096,
             "reasoning_effort": "low",
