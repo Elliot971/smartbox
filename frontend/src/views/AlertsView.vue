@@ -57,7 +57,7 @@ function statusText(s: string) {
 }
 
 function parseMeta(desc: string) {
-  const scoreMatch = desc.match(/异常分数:\s*([\d.→]+)/);
+  const scoreMatch = desc.match(/分数变化:\s*([\d.→]+)/);
   const operatorMatch = desc.match(/最近操作人:\s*([^|]+)/);
   return {
     hasMeta: !!(scoreMatch || operatorMatch),
