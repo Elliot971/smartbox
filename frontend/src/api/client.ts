@@ -153,7 +153,7 @@ export async function fetchToolDamageSummary() {
 export async function uploadAndAnalyze(file: File, toolCode = '', toolName = '上传检测', toolClass = '') {
   const form = new FormData();
   form.append('file', file);
-  const res = await api.post<DamageInspection>('/inspection/upload-and-analyze', form, {
+  const res = await api.post('/inspection/upload-and-analyze', form, {
     params: { tool_code: toolCode, tool_name: toolName, tool_class: toolClass },
     timeout: 180000,
   });

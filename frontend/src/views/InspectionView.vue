@@ -36,13 +36,14 @@
             <div v-else class="td-img-ph">{{ tool.tool_name.charAt(0) }}</div>
           </div>
           <div class="td-info">
-            <div class="td-name">{{ tool.tool_name }}
-              <button class="td-del" title="删除该工具的检测记录" @click="removeTool(tool.tool_code)">删除</button>
-            </div>
+            <div class="td-name">{{ tool.tool_name }}</div>
             <div class="td-code">{{ tool.tool_code }}</div>
             <span class="badge" :class="tool.latest_status">{{ statusText(tool.latest_status) }}</span>
             <div class="td-summary">{{ tool.latest_summary || '尚未检测' }}</div>
             <div class="td-count" v-if="tool.task_count > 0">历史检测 {{ tool.task_count }} 次</div>
+          <div class="td-actions">
+            <button class="btn small danger" @click="removeTool(tool.tool_code)">删除</button>
+          </div>
           </div>
         </div>
       </div>
@@ -139,8 +140,30 @@ async function doUpload(file: File) {
   uploadProgress.value = '上传中...';
   try {
     uploadProgress.value = '云端分析中...';
-    await uploadAndAnalyze(file);
-    await loadAll();
+    const res = await uploadAndAnalyze(file);
+    const taskId = (res as any).task_id;
+    if (taskId) {
+      uploadProgress.value = '检测中...';
+      // 轮询检测状态
+      for (let i = 0; i < 60; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        const task = tasks.value.find(t => t.id === taskId);
+        if (!task) {
+          await loadAll();
+          const updated = (await (await import('../api/client')).fetchDamageInspections(1))[0];
+          if (updated && updated.id === taskId && !['pending', 'analyzing'].includes(updated.status)) {
+            await loadAll();
+            break;
+          }
+        } else if (!['pending', 'analyzing'].includes(task.status)) {
+          await loadAll();
+          break;
+        }
+        uploadProgress.value = `检测中... (${i * 2}s)`;
+      }
+    } else {
+      await loadAll();
+    }
   } catch (err: any) {
     alert('分析失败：' + (err?.message || '未知错误'));
   } finally {
@@ -235,18 +258,14 @@ onMounted(loadAll);
 .td-code { font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
 .td-summary { font-size: 12px; color: #94a3b8; margin-top: 6px; line-height: 1.4; }
 .td-count { font-size: 11px; color: #94a3b8; margin-top: 4px; }
-.td-del {
-  float: right;
-  background: transparent;
-  border: 1px solid rgba(239, 68, 68, 0.3);
-  color: rgba(239, 68, 68, 0.8);
-  border-radius: 4px;
-  padding: 2px 8px;
-  font-size: 11px;
-  cursor: pointer;
-  transition: all 0.2s;
+.td-actions {
+  margin-top: 8px;
+  opacity: 0;
+  transition: opacity 0.2s;
 }
-.td-del:hover { background: rgba(239, 68, 68, 0.15); color: #ef4444; }
+.tool-damage-card:hover .td-actions {
+  opacity: 1;
+}
 
 .task-list { display: flex; flex-direction: column; gap: 8px; }
 .task-row {

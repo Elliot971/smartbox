@@ -98,15 +98,16 @@ def tool_damage_summary(db: Session = Depends(get_db)) -> list[dict]:
     return result
 
 
-@router.post("/upload-and-analyze", response_model=DamageInspectionOut)
+@router.post("/upload-and-analyze")
 async def upload_and_analyze(
     file: UploadFile = File(...),
     tool_code: str = Form(""),
     tool_name: str = Form("上传检测"),
     tool_class: str = Form(""),
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
 ) -> dict:
-    """工人上传照片，自动创建检测任务并调用云端模型分析"""
+    """上传照片，立即返回任务ID，后台异步分析"""
     if not file.content_type or not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="file must be an image")
 
@@ -128,5 +129,6 @@ async def upload_and_analyze(
         tool_class=tool_class,
         image_url=image_url,
     ))
-    analyzed = analyze_damage_inspection(db, task["id"])
-    return analyzed
+    # 后台异步分析，不阻塞响应
+    background_tasks.add_task(_analyze_task_bg, task["id"])
+    return {"ok": True, "task_id": task["id"], "message": "已创建检测任务，后台分析中"}

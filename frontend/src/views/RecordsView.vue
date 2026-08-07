@@ -2,7 +2,10 @@
   <section class="panel pad">
     <div class="section-title">
       <h2>借还记录</h2>
-      <button class="btn" @click="load">刷新</button>
+      <div style="display:flex; gap:8px; align-items:center;">
+        <span class="muted" style="font-size:12px;">共 {{ total }} 条</span>
+        <button class="btn" @click="load">刷新</button>
+      </div>
     </div>
     <table class="table">
       <thead>
@@ -28,6 +31,11 @@
         </tr>
       </tbody>
     </table>
+    <div class="pagination">
+      <button class="btn small" :disabled="page <= 1" @click="prevPage">上一页</button>
+      <span class="muted" style="font-size:12px;">第 {{ page }} 页</span>
+      <button class="btn small" :disabled="events.length < pageSize" @click="nextPage">下一页</button>
+    </div>
   </section>
 </template>
 
@@ -37,16 +45,46 @@ import { fetchEvents, type OperationRecord } from '../api/client';
 import { useRealtime } from '../stores/useRealtime';
 
 const events = ref<OperationRecord[]>([]);
+const page = ref(1);
+const pageSize = 20;
+const total = ref(0);
 
 function formatTime(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-';
 }
 
 async function load() {
-  events.value = await fetchEvents(50);
+  const offset = (page.value - 1) * pageSize;
+  events.value = await fetchEvents(pageSize * 5);
+  total.value = events.value.length;
+  // 分页切片
+  events.value = events.value.slice(offset, offset + pageSize);
+}
+
+function prevPage() {
+  if (page.value > 1) {
+    page.value--;
+    load();
+  }
+}
+
+function nextPage() {
+  if (events.value.length >= pageSize) {
+    page.value++;
+    load();
+  }
 }
 
 useRealtime(load);
 onMounted(load);
 </script>
 
+<style scoped>
+.pagination {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  margin-top: 16px;
+}
+</style>

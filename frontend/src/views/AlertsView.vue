@@ -2,13 +2,16 @@
   <section class="panel pad">
     <div class="section-title">
       <h2>异常告警</h2>
-      <div style="display:flex; gap:8px;">
+      <div style="display:flex; gap:8px; align-items:center;">
+        <button class="filter-tab" :class="{active: filter==='all'}" @click="filter='all'">全部</button>
+        <button class="filter-tab" :class="{active: filter==='open'}" @click="filter='open'">未处理</button>
+        <button class="filter-tab" :class="{active: filter==='closed'}" @click="filter='closed'">已处理</button>
         <button class="btn" @click="load">刷新</button>
         <button class="btn btn-danger" @click="clearAll">清空全部</button>
       </div>
     </div>
     <div class="alert-list">
-      <div v-for="alert in alerts" :key="alert.id" class="alert-card" :class="alert.severity">
+      <div v-for="alert in filteredAlerts" :key="alert.id" class="alert-card" :class="alert.severity">
         <div class="alert-header">
           <span class="badge" :class="alert.severity">{{ severityText(alert.severity) }}</span>
           <span class="alert-title">{{ alert.title }}</span>
@@ -28,7 +31,7 @@
           <button class="btn small danger" @click="remove(alert.id)">删除</button>
         </div>
       </div>
-      <div v-if="alerts.length === 0" class="muted" style="text-align:center; padding:24px;">
+      <div v-if="filteredAlerts.length === 0" class="muted" style="text-align:center; padding:24px;">
         暂无异常告警。
       </div>
     </div>
@@ -36,11 +39,16 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
 import { fetchAlerts, deleteAlert, clearAllAlerts, type AlertItem } from '../api/client';
 import { useRealtime } from '../stores/useRealtime';
 
+import { computed, onMounted, ref } from 'vue';
 const alerts = ref<AlertItem[]>([]);
+const filter = ref<'all' | 'open' | 'closed'>('all');
+const filteredAlerts = computed(() => {
+  if (filter.value === 'all') return alerts.value;
+  return alerts.value.filter(a => a.status === filter.value);
+});
 
 function formatTime(value: string | null) {
   return value ? new Date(value).toLocaleString('zh-CN', { hour12: false }) : '-';
@@ -177,5 +185,21 @@ onMounted(load);
 .alert-actions {
   display: flex;
   gap: 8px;
+}
+.filter-tab {
+  background: transparent;
+  border: 1px solid rgba(148, 163, 184, 0.2);
+  color: #94a3b8;
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.filter-tab:hover { color: #cbd5e1; }
+.filter-tab.active {
+  background: rgba(37, 99, 235, 0.2);
+  color: #93c5fd;
+  border-color: rgba(37, 99, 235, 0.4);
 }
 </style>

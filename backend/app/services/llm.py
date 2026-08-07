@@ -116,6 +116,16 @@ DAMAGE_VISION_SYSTEM_PROMPT = """你是航空维修车间的工具损坏检测�
 class LlmService:
     def __init__(self) -> None:
         self.settings = get_settings()
+        self._last_vision_call_time = 0.0
+
+    def _rate_limit_vision(self):
+        """限制 kimi-k3 视觉调用间隔，避免 PPIO 429 限流"""
+        import time
+        elapsed = time.time() - self._last_vision_call_time
+        min_interval = 2.0  # 至少间隔 2 秒
+        if elapsed < min_interval:
+            time.sleep(min_interval - elapsed)
+        self._last_vision_call_time = time.time()
 
     def build_analyze_prompt(self, context: dict, question: str = "") -> str:
         return (
@@ -243,6 +253,7 @@ class LlmService:
         anomaly_score: float, model_used: str, severity: str, confidence: float,
     ) -> str:
         """用多模态视觉模型（kimi-k3）看图生成损坏检测报告。失败返回空串。"""
+        self._rate_limit_vision()
         if not os.path.isfile(image_path):
             logger.warning("图片不存在，跳过视觉报告: %s", image_path)
             return ""

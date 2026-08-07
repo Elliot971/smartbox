@@ -185,7 +185,16 @@ def upsert_snapshot(db: Session, payload: DeviceSnapshotIn) -> dict:
                     item.tool_code,
                 )
         elif item.status == "present" and image_url:
-            # 在位但状态未变：也创建检测任务，但 analyze 时会比较分数变化决定是否调 kimi-k3
+            # 在位但状态未变：检查是否已有 pending/analyzing 的检测任务，避免重复创建
+            existing_pending = db.scalar(
+                select(DamageInspection).where(
+                    DamageInspection.tool_code == item.tool_code,
+                    DamageInspection.status.in_(["pending", "analyzing"]),
+                ).order_by(DamageInspection.id.desc())
+            )
+            if existing_pending:
+                logger.info("工具 %s 已有待处理检测任务 %s，跳过", item.tool_code, existing_pending.id)
+                continue
             inspection = create_damage_inspection(
                 db,
                 DamageInspectionCreate(
