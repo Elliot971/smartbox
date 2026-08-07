@@ -18,7 +18,7 @@
         <div class="alert-desc">{{ alert.description }}</div>
         <div class="alert-meta" v-if="parseMeta(alert.description).hasMeta">
           <span v-if="parseMeta(alert.description).scoreInfo" class="meta-item score">
-            分数变化: {{ parseMeta(alert.description).scoreInfo }}
+            分数变化： {{ parseMeta(alert.description).scoreInfo }}
           </span>
           <span v-if="parseMeta(alert.description).operatorInfo" class="meta-item operator">
             操作人: {{ parseMeta(alert.description).operatorInfo }}
@@ -57,8 +57,8 @@ function statusText(s: string) {
 }
 
 function parseMeta(desc: string) {
-  const scoreMatch = desc.match(/分数变化:\s*([\d.→]+)/);
-  const operatorMatch = desc.match(/最近操作人:\s*([^|]+)/);
+  const scoreMatch = desc.match(/分数变化：\s*([\d.→]+)/);
+  const operatorMatch = desc.match(/最近操作人：\s*([^|]+)/);
   return {
     hasMeta: !!(scoreMatch || operatorMatch),
     scoreInfo: scoreMatch ? scoreMatch[1].trim() : '',
