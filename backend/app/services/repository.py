@@ -620,44 +620,6 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
 
     result = damage_model_service.analyze(task)
 
-    # 获取异常分数
-    new_score = result.get("raw_result", {}).get("anomaly_score", 0.5)
-
-    # 查找该槽位上次的异常分数
-    slot = db.get(CabinetSlot, row.slot_id) if row.slot_id else None
-    old_score = slot.last_anomaly_score if slot else None
-
-    # 分数变化检测：如果上次有分数且变化不大，跳过 kimi-k3 报告（省钱省时间）
-    SCORE_CHANGE_THRESHOLD = 0.1
-    if old_score is not None and abs(new_score - old_score) < SCORE_CHANGE_THRESHOLD:
-        logger.info(
-            "分数变化不足 (slot %s: %.3f -> %.3f, delta=%.3f < %.1f), 跳过 kimi-k3 报告",
-            row.slot_id, old_score, new_score, abs(new_score - old_score), SCORE_CHANGE_THRESHOLD,
-        )
-        # 更新分数但不触发 kimi-k3
-        if slot:
-            slot.last_anomaly_score = new_score
-        row.status = result["status"]
-        row.severity = result["severity"]
-        row.confidence = result["confidence"]
-        row.summary = result["summary"]
-        row.raw_result = result["raw_result"]
-        row.updated_at = now_cn()
-        if cropped_path and os.path.exists(cropped_path):
-            os.remove(cropped_path)
-        # 分数变化不大不创建告警
-        db.commit()
-        return _inspection_to_dict(row, device)
-
-    # 分数变化大或首次检测，触发 kimi-k3 完整报告
-    logger.info(
-        "分数变化显著 (slot %s: %s -> %.3f), 触发 kimi-k3 报告",
-        row.slot_id, f"{old_score:.3f}" if old_score is not None else "首次", new_score,
-    )
-    # 更新槽位的上次分数
-    if slot:
-        slot.last_anomaly_score = new_score
-
     # Save heatmap: precisely map 4090's DINOv2 heatmap onto the full original image.
     # DINOv2 preprocessing: crop(tool ROI) → compress(≤1024) → Resize(392) → CenterCrop(392)
     # Heatmap is the 392×392 overlay of the DINOv2 input.
@@ -761,6 +723,45 @@ def analyze_damage_inspection(db: Session, task_id: int) -> dict | None:
         except Exception:
             logger.exception("热力图保存失败")
             row.heatmap_url = ""
+
+    # 获取异常分数
+    new_score = result.get("raw_result", {}).get("anomaly_score", 0.5)
+
+    # 查找该槽位上次的异常分数
+    slot = db.get(CabinetSlot, row.slot_id) if row.slot_id else None
+    old_score = slot.last_anomaly_score if slot else None
+
+    # 分数变化检测：如果上次有分数且变化不大，跳过 kimi-k3 报告（省钱省时间）
+    SCORE_CHANGE_THRESHOLD = 0.1
+    if old_score is not None and abs(new_score - old_score) < SCORE_CHANGE_THRESHOLD:
+        logger.info(
+            "分数变化不足 (slot %s: %.3f -> %.3f, delta=%.3f < %.1f), 跳过 kimi-k3 报告",
+            row.slot_id, old_score, new_score, abs(new_score - old_score), SCORE_CHANGE_THRESHOLD,
+        )
+        # 更新分数但不触发 kimi-k3
+        if slot:
+            slot.last_anomaly_score = new_score
+        row.status = result["status"]
+        row.severity = result["severity"]
+        row.confidence = result["confidence"]
+        row.summary = result["summary"]
+        row.raw_result = result["raw_result"]
+        row.updated_at = now_cn()
+        if cropped_path and os.path.exists(cropped_path):
+            os.remove(cropped_path)
+        # 分数变化不大不创建告警
+        db.commit()
+        return _inspection_to_dict(row, device)
+
+    # 分数变化大或首次检测，触发 kimi-k3 完整报告
+    logger.info(
+        "分数变化显著 (slot %s: %s -> %.3f), 触发 kimi-k3 报告",
+        row.slot_id, f"{old_score:.3f}" if old_score is not None else "首次", new_score,
+    )
+    # 更新槽位的上次分数
+    if slot:
+        slot.last_anomaly_score = new_score
+
 
     # Generate LLM natural language report, preferring the cropped ROI if available.
     llm_image_path = cropped_path if cropped_path else ""
